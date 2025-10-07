@@ -1,0 +1,11 @@
+[package]
+name = "ziponline"
+version = "0.1.0"
+edition = "2024"
+
+authors = ["OgGhostJelly"]
+license = "MIT"
+description = "Extract parts of a zip over HTTP fast."
+repository = "https://github.com/ogghostjelly/ziponline"
+
+[dependencies]
