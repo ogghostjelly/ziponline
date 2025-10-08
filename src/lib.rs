@@ -1,23 +1,16 @@
 #![allow(clippy::let_unit_value)]
-use std::{io, mem, num::ParseIntError};
+use std::{io, num::ParseIntError};
 
 use bytes::{Buf, Bytes};
-use futures::{
-    TryStreamExt, future,
-    stream::{self, FuturesUnordered, TryChunksError},
-};
+use futures::stream::TryChunksError;
 use reqwest::{Client, Url, header::ToStrError};
 
 use crate::{
-    chunk_by::EvenChunkBy,
     parser::{Parser, ParserStream},
-    ring_buf::RingBuffer,
     structs::{Cdfh, CompressionMethod, Eocd, Eocd32, Eocd64},
 };
 
-mod chunk_by;
 mod parser;
-mod ring_buf;
 mod structs;
 
 /// Extract a single file from a zip.
@@ -50,6 +43,18 @@ pub async fn extract_file(
     println!("Got CDFH in {:?}", std::time::Instant::now() - start);
 
     let start = std::time::Instant::now();
+    let reader = read_file_at_cdfh(client, url, &cdfh).await?;
+    println!("Got File Header in {:?}", std::time::Instant::now() - start);
+
+    Ok(reader)
+}
+
+/// Read the file contents at the file header offset in the given CDFH.
+async fn read_file_at_cdfh(
+    client: &Client,
+    url: &Url,
+    cdfh: &Cdfh,
+) -> Result<impl io::Read + use<>> {
     let resp = client
         .get(url.clone())
         .header("Range", format!("bytes={}-", cdfh.file_header_offset))
@@ -69,8 +74,6 @@ pub async fn extract_file(
     let bytes = parser.take_bytes(cdfh.compressed_size as usize).await?;
     let reader = inflate::DeflateDecoder::new(bytes.reader());
 
-    println!("Got File Header in {:?}", std::time::Instant::now() - start);
-
     Ok(reader)
 }
 
@@ -81,55 +84,10 @@ async fn find_in_cd(
     eocd: &Eocd,
     filename: &str,
 ) -> Result<Option<Cdfh>> {
-    // Sometimes the chunk boundaries will split a CDFH in half,
-    // so we keep track of bytes that aren't part of any CDFH (stray bytes),
-    // and join them back up at the end.
+    let mut parser = request_cd(client, url, eocd).await?;
 
-    // Process chunks
-    let mut chunks_fut = FuturesUnordered::new();
-
-    for (from, to) in EvenChunkBy::new(eocd.cd_size, 10) {
-        let from = from + eocd.cd_offset;
-        let to = to + eocd.cd_offset;
-
-        chunks_fut.push(request_chunk(client, url, from, to, filename, eocd.offset));
-    }
-
-    // Process stray chunks
-    // Join the starts and ends of stray bytes to create valid chunks.
-    let mut joined_strays: Vec<Vec<u8>> = vec![];
-
-    while let Some((start, end, cdfh)) = chunks_fut.try_next().await? {
-        if let Some(cdfh) = cdfh {
-            return Ok(Some(cdfh));
-        }
-
-        if joined_strays.is_empty() {
-            // First element in the list, just push it right on.
-            joined_strays.push(start);
-        } else {
-            // Join the start of these bytes to the end of the previous bytes.
-            let last = joined_strays.len() - 1;
-            let mut start = start;
-            joined_strays[last].append(&mut start);
-        }
-
-        joined_strays.push(end);
-    }
-
-    let mut stray_chunks_fut = FuturesUnordered::new();
-
-    // Process strays
-    for bytes in joined_strays {
-        let bytes = Bytes::from_owner(bytes);
-        let parser = Parser::new(stream::once(future::ok(bytes)));
-        stray_chunks_fut.push(process_chunk(parser, filename, eocd.offset));
-    }
-
-    while let Some((start, end, cdfh)) = stray_chunks_fut.try_next().await? {
-        _ = (start, end); // start/end should be empty.
-
-        if let Some(cdfh) = cdfh {
+    while let Some(cdfh) = parser.next().await? {
+        if cdfh.filename == filename {
             return Ok(Some(cdfh));
         }
     }
@@ -137,70 +95,60 @@ async fn find_in_cd(
     Ok(None)
 }
 
-/// Create a HTTP request for a chunk and pass it to `process_chunk`
-async fn request_chunk(
+/// Make a range request for the Central Directory and pass the response data to `CdParser`.
+async fn request_cd(
     client: &Client,
     url: &Url,
-    from: u64,
-    to: u64,
-    filename: &str,
-    maximum_allowed_offset: usize,
-) -> Result<(Vec<u8>, Vec<u8>, Option<Cdfh>)> {
+    eocd: &Eocd,
+) -> Result<CdParser<impl ParserStream>> {
+    let range = format!("bytes={}-{}", eocd.cd_offset, eocd.cd_offset + eocd.cd_size);
+
     let resp = client
         .get(url.clone())
-        .header("Range", format!("bytes={from}-{to}"))
+        .header("Range", range)
         .send()
         .await?;
 
-    let r = Parser::new(resp.bytes_stream());
+    let parser = Parser::new(resp.bytes_stream());
 
-    process_chunk(r, filename, maximum_allowed_offset).await
+    Ok(CdParser::new(parser, eocd.offset))
 }
 
-/// Process a single chunk inside the content directory,
-/// return strays bytes from the left and right of the input stream that didn't count as a file header.
-async fn process_chunk<S: ParserStream>(
-    mut r: Parser<S>,
-    filename: &str,
+/// Parses the content directory and provides an API similar to Iterator but for Content Directory File Headers.
+struct CdParser<S: ParserStream> {
+    parser: Parser<S>,
     maximum_allowed_offset: usize,
-) -> Result<(Vec<u8>, Vec<u8>, Option<Cdfh>)> {
-    let mut strays = Vec::new(); // stray bytes at the start of the stream
-    let mut buf = RingBuffer::<4>::new();
-    let mut start_stray = None;
-    let mut found = None;
+}
 
-    while let Some(value) = r.next().await? {
-        if let Some(x) = buf.push(value) {
-            strays.push(x);
-        }
-
-        // Is it a CDFH?
-        if buf.as_slice() == b"PK\x01\x02" {
-            let cdfh = match read_cdfh(&mut r, maximum_allowed_offset).await {
-                Ok(None) | Err(Error::UnexpectedEof) => continue,
-                Ok(Some(cdfh)) => cdfh,
-                Err(e) => return Err(e),
-            };
-
-            if start_stray.is_none() {
-                start_stray = Some(mem::take(&mut strays));
-            } else {
-                strays.clear();
-            }
-            buf.clear();
-
-            if cdfh.filename == filename {
-                found = Some(cdfh);
-                break;
-            }
+impl<S: ParserStream> CdParser<S> {
+    fn new(parser: Parser<S>, maximum_allowed_offset: usize) -> Self {
+        Self {
+            parser,
+            maximum_allowed_offset,
         }
     }
 
-    for value in buf.as_slice() {
-        strays.push(*value);
-    }
+    async fn next(&mut self) -> Result<Option<Cdfh>> {
+        let mut peek_buf: [u8; 4] = [0; 4];
 
-    Ok((start_stray.unwrap_or_default(), strays, found))
+        while let Some(value) = self.parser.next().await? {
+            peek_buf.rotate_left(1);
+            peek_buf[peek_buf.len() - 1] = value;
+
+            // Is it a CDFH?
+            if peek_buf == *b"PK\x01\x02" {
+                let cdfh = match read_cdfh(&mut self.parser, self.maximum_allowed_offset).await {
+                    Ok(None) | Err(Error::UnexpectedEof) => continue,
+                    Ok(Some(cdfh)) => cdfh,
+                    Err(e) => return Err(e),
+                };
+
+                return Ok(Some(cdfh));
+            }
+        }
+
+        Ok(None)
+    }
 }
 
 /// Read a central directory file header or None if it is a false positive.
