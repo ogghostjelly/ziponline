@@ -6,9 +6,13 @@ use ziponline::extract_file;
 #[tokio::main]
 async fn main() {
     let client = Client::new();
-    let url = Url::from_str("https://cdn.modrinth.com/data/Xbc0uyRg/versions/XMiAOQvM/create-fabric-0.5.1-i-build.1630%2Bmc1.19.2.jar").unwrap();
+    // NOTE: edge.forgecdn.net urls will redirect to mediafilez and fail if used directly,
+    //       so we must use the actual url to download from.
+    let url =
+        Url::from_str("https://mediafilez.forgecdn.net/files/5838/779/create-1.20.1-0.5.1.j.jar")
+            .unwrap();
     let total = std::time::Instant::now();
-    let mut reader = extract_file(&client, &url, None, "fabric.mod.json")
+    let mut reader = extract_file(&client, &url, None, "META-INF/mods.toml")
         .await
         .unwrap();
     let start = std::time::Instant::now();

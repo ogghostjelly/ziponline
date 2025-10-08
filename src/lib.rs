@@ -310,7 +310,8 @@ async fn request_eocd(client: &Client, url: &Url, filesize: usize) -> Result<Opt
         .get(url.clone())
         .header("Range", format!("bytes={from}-{to}"))
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
 
     let mut reader = Parser::new(resp.bytes_stream());
 
