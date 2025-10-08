@@ -4,6 +4,9 @@ use super::{Error, Result};
 use bytes::Bytes;
 use futures::{TryStream, TryStreamExt};
 
+/// Parse a `Stream` of `Bytes`.
+/// Can be thought of as an iterator that returns `u8`,
+/// with extra capability to return slices and little-endian numbers.
 pub struct Parser<S: ParserStream> {
     stream: S,
     bytes: Bytes,
@@ -21,10 +24,12 @@ impl<S: ParserStream> Parser<S> {
 }
 
 impl<S: ParserStream> Parser<S> {
+    /// Skip an amount of bytes in the stream.
     pub async fn skip_bytes(&mut self, length: usize) -> Result<()> {
         self.take_bytes(length).await.map(|_| ())
     }
 
+    /// Take a list of bytes from the stream.
     pub async fn take_bytes(&mut self, length: usize) -> Result<Bytes> {
         self.request_atleast(length).await?;
         if self.bytes.len() < length {
@@ -33,18 +38,22 @@ impl<S: ParserStream> Parser<S> {
         Ok(self.bytes.split_to(length))
     }
 
+    /// Take a little-endian u16 from the stream.
     pub async fn take_u16(&mut self) -> Result<u16> {
         Ok(u16::from_le_bytes(self.take_fixed_slice().await?))
     }
 
+    /// Take a little-endian u32 from the stream.
     pub async fn take_u32(&mut self) -> Result<u32> {
         Ok(u32::from_le_bytes(self.take_fixed_slice().await?))
     }
 
+    /// Take a little-endian u64 from the stream.
     pub async fn take_u64(&mut self) -> Result<u64> {
         Ok(u64::from_le_bytes(self.take_fixed_slice().await?))
     }
 
+    /// Take a fixed slice of bytes from the stream.
     pub async fn take_fixed_slice<const N: usize>(&mut self) -> Result<[u8; N]> {
         self.request_atleast(N).await?;
         if self.bytes.len() < N {
@@ -62,6 +71,7 @@ impl<S: ParserStream> Parser<S> {
         Ok(unsafe { slice.assume_init() })
     }
 
+    /// Get the next byte in the stream or None if it is finished.
     pub async fn next(&mut self) -> Result<Option<u8>> {
         self.request_atleast(1).await?;
         if self.bytes.is_empty() {
@@ -86,40 +96,3 @@ impl<S: ParserStream> Parser<S> {
 
 pub trait ParserStream: TryStream<Ok = Bytes, Error = reqwest::Error> + Unpin {}
 impl<T: TryStream<Ok = Bytes, Error = reqwest::Error> + Unpin> ParserStream for T {}
-
-/*
-pub trait ReadExt
-where
-    Self: AsyncRead + Unpin,
-{
-    async fn read_bytes(&mut self, length: usize) -> io::Result<Vec<u8>> {
-        let mut bytes = vec![0; length];
-        self.read_exact(bytes.as_mut_slice()).await?;
-        Ok(bytes)
-    }
-
-    async fn skip_bytes(&mut self, length: usize) -> io::Result<()> {
-        self.read_bytes(length).await.map(|_| ())
-    }
-
-    async fn read_fixed_slice<const N: usize>(&mut self) -> io::Result<[u8; N]> {
-        let mut buf: MaybeUninit<[u8; N]> = MaybeUninit::uninit();
-        self.read_exact(unsafe { buf.assume_init_mut() }).await?;
-        Ok(unsafe { buf.assume_init() })
-    }
-
-    async fn read_u16(&mut self) -> io::Result<u16> {
-        Ok(u16::from_le_bytes(self.read_fixed_slice().await?))
-    }
-
-    async fn read_u32(&mut self) -> io::Result<u32> {
-        Ok(u32::from_le_bytes(self.read_fixed_slice().await?))
-    }
-
-    async fn read_u64(&mut self) -> io::Result<u64> {
-        Ok(u64::from_le_bytes(self.read_fixed_slice().await?))
-    }
-}
-
-impl<T: AsyncRead + Unpin> ReadExt for T {}
- */

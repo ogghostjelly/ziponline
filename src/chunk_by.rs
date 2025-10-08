@@ -24,12 +24,12 @@ impl Iterator for EvenChunkBy {
     type Item = (u64, u64);
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.chunks <= 0 {
+        if self.chunks == 0 {
             return None;
         }
         self.chunks -= 1;
 
-        let remainder = if self.remainder <= 0 {
+        let remainder = if self.remainder == 0 {
             0
         } else {
             self.remainder -= 1;

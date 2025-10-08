@@ -1,3 +1,4 @@
+#![allow(clippy::let_unit_value)]
 use std::{io, mem, num::ParseIntError};
 
 use bytes::{Buf, Bytes};
@@ -19,6 +20,7 @@ mod parser;
 mod ring_buf;
 mod structs;
 
+/// Extract a single file from a zip.
 pub async fn extract_file(
     client: &Client,
     url: &Url,
@@ -72,6 +74,7 @@ pub async fn extract_file(
     Ok(reader)
 }
 
+/// Find a file inside the central directory.
 async fn find_in_cd(
     client: &Client,
     url: &Url,
@@ -134,6 +137,7 @@ async fn find_in_cd(
     Ok(None)
 }
 
+/// Create a HTTP request for a chunk and pass it to `process_chunk`
 async fn request_chunk(
     client: &Client,
     url: &Url,
@@ -153,6 +157,8 @@ async fn request_chunk(
     process_chunk(r, filename, maximum_allowed_offset).await
 }
 
+/// Process a single chunk inside the content directory,
+/// return strays bytes from the left and right of the input stream that didn't count as a file header.
 async fn process_chunk<S: ParserStream>(
     mut r: Parser<S>,
     filename: &str,
@@ -176,7 +182,7 @@ async fn process_chunk<S: ParserStream>(
                 Err(e) => return Err(e),
             };
 
-            if let None = start_stray {
+            if start_stray.is_none() {
                 start_stray = Some(mem::take(&mut strays));
             } else {
                 strays.clear();
@@ -328,10 +334,10 @@ async fn request_eocd(client: &Client, url: &Url, filesize: usize) -> Result<Opt
             {
                 return Ok(Some(value.into()));
             }
-        } else if buf == *b"PK\x06\x06" {
-            if let Some(value) = read_eocd64(&mut reader, from + byte_offset).await? {
-                return Ok(Some(value.into()));
-            }
+        } else if buf == *b"PK\x06\x06"
+            && let Some(value) = read_eocd64(&mut reader, from + byte_offset).await?
+        {
+            return Ok(Some(value.into()));
         }
 
         byte_offset += 1;
