@@ -98,7 +98,7 @@ pub async fn extract_file(
     println!("Got EOCD in {:?}", std::time::Instant::now() - start);
 
     let start = std::time::Instant::now();
-    let Some(cdfh) = find_in_cd(client, url, &eocd, filename).await? else {
+    let Some(cdfh) = find_cdfh(client, url, &eocd, filename).await? else {
         return Err(Error::CdFileNotFound);
     };
     println!("Got CDFH in {:?}", std::time::Instant::now() - start);
@@ -140,7 +140,7 @@ async fn read_file_at_cdfh(
 }
 
 /// Find a file inside the central directory.
-async fn find_in_cd(
+async fn find_cdfh(
     client: &Client,
     url: &Url,
     eocd: &Eocd,
