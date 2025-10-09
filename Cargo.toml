@@ -14,5 +14,3 @@ futures = "0.3.31"
 inflate = "0.4.5"
 reqwest = { version = "0.12.23", features = ["stream"] }
 thiserror = "2.0.17"
-# TODO: remove unneccessary tokio dependency
-tokio = { version = "1.47.1", features = ["macros", "rt-multi-thread"] }

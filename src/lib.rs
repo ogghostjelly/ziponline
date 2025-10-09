@@ -1,8 +1,7 @@
 #![allow(clippy::let_unit_value)]
 use std::{io, num::ParseIntError, rc::Rc};
 
-use bytes::{Buf, Bytes};
-use futures::stream::TryChunksError;
+use bytes::Buf;
 use reqwest::{Client, Url, header::ToStrError};
 
 use crate::{
@@ -81,33 +80,20 @@ pub async fn extract_file(
     filesize: Option<usize>,
     filename: &str,
 ) -> Result<impl io::Read> {
-    let start = std::time::Instant::now();
     let filesize = match filesize {
         Some(filesize) => filesize,
         None => request_content_length(client, url).await?,
     };
-    println!(
-        "Got Content-Length in {:?}",
-        std::time::Instant::now() - start
-    );
 
-    let start = std::time::Instant::now();
     let Some(eocd) = request_eocd(client, url, filesize).await? else {
         return Err(Error::EocdNotFound);
     };
-    println!("Got EOCD in {:?}", std::time::Instant::now() - start);
 
-    let start = std::time::Instant::now();
     let Some(cdfh) = find_cdfh(client, url, &eocd, filename).await? else {
         return Err(Error::CdFileNotFound);
     };
-    println!("Got CDFH in {:?}", std::time::Instant::now() - start);
 
-    let start = std::time::Instant::now();
-    let reader = read_file_at_cdfh(client, url, &cdfh).await?;
-    println!("Got File Header in {:?}", std::time::Instant::now() - start);
-
-    Ok(reader)
+    read_file_at_cdfh(client, url, &cdfh).await
 }
 
 /// Read the file contents at the file header offset in the given CDFH.
@@ -481,8 +467,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     #[error(transparent)]
     Request(#[from] reqwest::Error),
-    #[error(transparent)]
-    TryChunks(#[from] TryChunksError<Bytes, reqwest::Error>),
     #[error("missing content-length header")]
     ContentLengthMissing,
     #[error("content-length is not valid ascii")]
