@@ -16,7 +16,7 @@ async fn main() {
         .await
         .unwrap();
     let start = std::time::Instant::now();
-    io::copy(&mut reader, &mut fs::File::create("example.json").unwrap()).unwrap();
+    io::copy(&mut reader, &mut fs::File::create("example").unwrap()).unwrap();
     println!("Wrote file in {:?}", std::time::Instant::now() - start);
     println!("Finished in {:?}", std::time::Instant::now() - total);
 }

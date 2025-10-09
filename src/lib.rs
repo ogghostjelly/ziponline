@@ -59,7 +59,8 @@ async fn read_file_at_cdfh(
         .get(url.clone())
         .header("Range", format!("bytes={}-", cdfh.file_header_offset))
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
 
     let mut parser = Parser::new(resp.bytes_stream());
     let signature: [u8; 4] = parser.take_fixed_slice().await?;
@@ -107,7 +108,8 @@ async fn request_cd(
         .get(url.clone())
         .header("Range", range)
         .send()
-        .await?;
+        .await?
+        .error_for_status()?;
 
     let parser = Parser::new(resp.bytes_stream());
 
@@ -385,7 +387,7 @@ async fn read_eocd64<S: ParserStream>(r: &mut Parser<S>, offset: usize) -> Resul
 /// # Errors
 /// If the Content-Length is not present or malformed.
 async fn request_content_length(client: &Client, url: &Url) -> Result<usize> {
-    let resp = client.head(url.clone()).send().await?;
+    let resp = client.head(url.clone()).send().await?.error_for_status()?;
 
     let Some(value) = resp.headers().get("content-length") else {
         return Err(Error::ContentLengthMissing);
