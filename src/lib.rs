@@ -1,19 +1,80 @@
 #![allow(clippy::let_unit_value)]
-use std::{io, num::ParseIntError};
+use std::{io, num::ParseIntError, rc::Rc};
 
 use bytes::{Buf, Bytes};
 use futures::stream::TryChunksError;
 use reqwest::{Client, Url, header::ToStrError};
 
 use crate::{
-    parser::{Parser, ParserStream},
+    parser::{BoxParserStream, Parser, ParserStream},
     structs::{Cdfh, CompressionMethod, Eocd, Eocd32, Eocd64},
 };
 
 mod parser;
 mod structs;
 
+/// Zip file that fetches the data it needs lazily.
+/// If you plan to extract only one file from the zip use [`extract_file`] instead.
+pub struct LazyZipFile {
+    client: Client,
+    url: Url,
+    headers: Vec<Rc<Cdfh>>,
+    cd: CdParser<BoxParserStream>,
+}
+
+impl LazyZipFile {
+    pub async fn new(client: Client, url: Url, filesize: Option<usize>) -> Result<Self> {
+        let filesize = match filesize {
+            Some(filesize) => filesize,
+            None => request_content_length(&client, &url).await?,
+        };
+
+        let Some(eocd) = request_eocd(&client, &url, filesize).await? else {
+            return Err(Error::EocdNotFound);
+        };
+
+        let cd = request_cd(&client, &url, &eocd).await?;
+
+        Ok(Self {
+            cd: cd.into_box(),
+            headers: vec![],
+            client,
+            url,
+        })
+    }
+
+    pub async fn extract_file(&mut self, filename: &str) -> Result<impl io::Read> {
+        let Some(cdfh) = self.find_cdfh(|cdfh| cdfh.filename == filename).await? else {
+            return Err(Error::CdFileNotFound);
+        };
+
+        read_file_at_cdfh(&self.client, &self.url, &cdfh).await
+    }
+
+    async fn find_cdfh(
+        &mut self,
+        mut cond: impl FnMut(&Rc<Cdfh>) -> bool,
+    ) -> Result<Option<Rc<Cdfh>>> {
+        for cdfh in &self.headers {
+            if cond(cdfh) {
+                return Ok(Some(Rc::clone(cdfh)));
+            }
+        }
+
+        while let Some(cdfh) = self.cd.next().await? {
+            let cdfh = Rc::new(cdfh);
+            self.headers.push(Rc::clone(&cdfh));
+            if cond(&cdfh) {
+                return Ok(Some(cdfh));
+            }
+        }
+
+        Ok(None)
+    }
+}
+
 /// Extract a single file from a zip.
+/// If you plan to extract multiple files from the same zip use [`LazyZipFile`] instead.
 pub async fn extract_file(
     client: &Client,
     url: &Url,
@@ -101,7 +162,7 @@ async fn request_cd(
     client: &Client,
     url: &Url,
     eocd: &Eocd,
-) -> Result<CdParser<impl ParserStream>> {
+) -> Result<CdParser<impl ParserStream + use<>>> {
     let range = format!("bytes={}-{}", eocd.cd_offset, eocd.cd_offset + eocd.cd_size);
 
     let resp = client
@@ -127,6 +188,16 @@ impl<S: ParserStream> CdParser<S> {
         Self {
             parser,
             maximum_allowed_offset,
+        }
+    }
+
+    fn into_box(self) -> CdParser<BoxParserStream>
+    where
+        S: 'static,
+    {
+        CdParser {
+            parser: self.parser.into_box(),
+            maximum_allowed_offset: self.maximum_allowed_offset,
         }
     }
 

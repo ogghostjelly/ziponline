@@ -4,6 +4,8 @@ use super::{Error, Result};
 use bytes::Bytes;
 use futures::{TryStream, TryStreamExt};
 
+pub type BoxParserStream = Box<dyn ParserStream>;
+
 /// Parse a `Stream` of `Bytes`.
 /// Can be thought of as an iterator that returns `u8`,
 /// with extra capability to return slices and little-endian numbers.
@@ -24,6 +26,17 @@ impl<S: ParserStream> Parser<S> {
 }
 
 impl<S: ParserStream> Parser<S> {
+    pub fn into_box(self) -> Parser<BoxParserStream>
+    where
+        S: 'static,
+    {
+        Parser {
+            stream: Box::new(self.stream),
+            bytes: self.bytes,
+            is_eof: self.is_eof,
+        }
+    }
+
     /// Skip an amount of bytes in the stream.
     pub async fn skip_bytes(&mut self, length: usize) -> Result<()> {
         self.take_bytes(length).await.map(|_| ())
@@ -94,5 +107,12 @@ impl<S: ParserStream> Parser<S> {
     }
 }
 
-pub trait ParserStream: TryStream<Ok = Bytes, Error = reqwest::Error> + Unpin {}
-impl<T: TryStream<Ok = Bytes, Error = reqwest::Error> + Unpin> ParserStream for T {}
+type ParserStreamItem = std::result::Result<Bytes, reqwest::Error>;
+pub trait ParserStream:
+    TryStream<Item = ParserStreamItem, Ok = Bytes, Error = reqwest::Error> + Unpin
+{
+}
+impl<T: TryStream<Item = ParserStreamItem, Ok = Bytes, Error = reqwest::Error> + Unpin> ParserStream
+    for T
+{
+}
