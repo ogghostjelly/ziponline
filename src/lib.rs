@@ -1,3 +1,4 @@
+#![warn(clippy::cargo)]
 #![allow(clippy::let_unit_value)]
 use std::{io, num::ParseIntError, rc::Rc};
 
