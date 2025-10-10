@@ -3,7 +3,7 @@
 use std::{io, num::ParseIntError, rc::Rc};
 
 use bytes::Buf;
-use reqwest::{Client, Url, header::ToStrError};
+use reqwest::{Client, IntoUrl, Url, header::ToStrError};
 
 use crate::{
     parser::{BoxParserStream, Parser, ParserStream},
@@ -23,7 +23,21 @@ pub struct LazyZipFile {
 }
 
 impl LazyZipFile {
-    pub async fn new(client: Client, url: Url, filesize: Option<usize>) -> Result<Self> {
+    pub async fn new<U>(client: Client, url: U, filesize: Option<usize>) -> Result<Self>
+    where
+        U: IntoUrl,
+    {
+        Self::new_inner(client, url.into_url()?, filesize).await
+    }
+
+    pub async fn get<U>(url: U) -> Result<Self>
+    where
+        U: IntoUrl,
+    {
+        Self::new_inner(Client::new(), url.into_url()?, None).await
+    }
+
+    async fn new_inner(client: Client, url: Url, filesize: Option<usize>) -> Result<Self> {
         let filesize = match filesize {
             Some(filesize) => filesize,
             None => request_content_length(&client, &url).await?,
@@ -44,32 +58,48 @@ impl LazyZipFile {
     }
 
     pub async fn extract_file(&mut self, filename: &str) -> Result<impl io::Read> {
-        let Some(cdfh) = self.find_cdfh(|cdfh| cdfh.filename == filename).await? else {
-            return Err(Error::CdFileNotFound);
-        };
+        let mut iter = self.records();
 
-        read_file_at_cdfh(&self.client, &self.url, &cdfh).await
+        while let Some(cdfh) = iter.next().await? {
+            if cdfh.filename == filename {
+                return self.read_file(&cdfh).await;
+            }
+        }
+
+        Err(Error::CdFileNotFound)
     }
 
-    async fn find_cdfh(
-        &mut self,
-        mut cond: impl FnMut(&Rc<Cdfh>) -> bool,
-    ) -> Result<Option<Rc<Cdfh>>> {
-        for cdfh in &self.headers {
-            if cond(cdfh) {
-                return Ok(Some(Rc::clone(cdfh)));
+    async fn read_file(&self, cdfh: &Cdfh) -> Result<impl io::Read + use<>> {
+        read_file_at_cdfh(&self.client, &self.url, cdfh).await
+    }
+
+    fn records(&mut self) -> CdfhIterator<'_> {
+        CdfhIterator {
+            zip: self,
+            index: 0,
+        }
+    }
+}
+
+struct CdfhIterator<'a> {
+    zip: &'a mut LazyZipFile,
+    index: usize,
+}
+
+impl<'a> CdfhIterator<'a> {
+    async fn next(&mut self) -> Result<Option<Rc<Cdfh>>> {
+        match self.zip.headers.get(self.index) {
+            Some(cdfh) => Ok(Some(Rc::clone(cdfh))),
+            None => {
+                let Some(cdfh) = self.zip.cd.next().await? else {
+                    return Ok(None);
+                };
+
+                let cdfh = Rc::new(cdfh);
+                self.zip.headers.push(Rc::clone(&cdfh));
+                Ok(Some(cdfh))
             }
         }
-
-        while let Some(cdfh) = self.cd.next().await? {
-            let cdfh = Rc::new(cdfh);
-            self.headers.push(Rc::clone(&cdfh));
-            if cond(&cdfh) {
-                return Ok(Some(cdfh));
-            }
-        }
-
-        Ok(None)
     }
 }
 
@@ -164,7 +194,7 @@ async fn request_cd(
     Ok(CdParser::new(parser, eocd.offset))
 }
 
-/// Parses the content directory and provides an API similar to Iterator but for Content Directory File Headers.
+/// Parses the central directory and provides an API similar to Iterator but for Central Directory File Headers.
 struct CdParser<S: ParserStream> {
     parser: Parser<S>,
     maximum_allowed_offset: usize,
