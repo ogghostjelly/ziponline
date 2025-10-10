@@ -2,6 +2,10 @@
 
 Extract files from a zip asynchronously without downloading the whole zip, using HTTP range requests.
 
+# Limitations
+
+Currently only supports DEFLATE decompression and only supports EOCD headers that are less than 256 bytes in size.
+
 # Examples
 
 Extract a single file
