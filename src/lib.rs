@@ -1,6 +1,6 @@
 #![warn(clippy::cargo)]
 #![allow(clippy::let_unit_value)]
-use std::{io, num::ParseIntError, rc::Rc};
+use std::{collections::HashMap, io, num::ParseIntError, rc::Rc};
 
 use bytes::Buf;
 use reqwest::{Client, IntoUrl, Url, header::ToStrError};
@@ -18,11 +18,12 @@ mod structs;
 pub struct LazyZipFile {
     client: Client,
     url: Url,
-    headers: Vec<Rc<Cdfh>>,
+    headers: HashMap<String, Rc<Cdfh>>,
     cd: CdParser<BoxParserStream>,
 }
 
 impl LazyZipFile {
+    /// Create a new lazy zip file with the reqwest::Client and filesize.
     pub async fn new<U>(client: Client, url: U, filesize: Option<usize>) -> Result<Self>
     where
         U: IntoUrl,
@@ -30,6 +31,7 @@ impl LazyZipFile {
         Self::new_inner(client, url.into_url()?, filesize).await
     }
 
+    /// Create a new lazy zip file, assuming the filesize is unknown.
     pub async fn get<U>(url: U) -> Result<Self>
     where
         U: IntoUrl,
@@ -51,54 +53,33 @@ impl LazyZipFile {
 
         Ok(Self {
             cd: cd.into_box(),
-            headers: vec![],
+            headers: HashMap::new(),
             client,
             url,
         })
     }
 
+    /// Extract a single file from the zip.
+    /// Returns an io::Read to the raw contents of the file.
     pub async fn extract_file(&mut self, filename: &str) -> Result<impl io::Read> {
-        let mut iter = self.records();
-
-        while let Some(cdfh) = iter.next().await? {
-            if cdfh.filename == filename {
-                return self.read_file(&cdfh).await;
-            }
-        }
-
-        Err(Error::CdFileNotFound)
-    }
-
-    async fn read_file(&self, cdfh: &Cdfh) -> Result<impl io::Read + use<>> {
-        read_file_at_cdfh(&self.client, &self.url, cdfh).await
-    }
-
-    fn records(&mut self) -> CdfhIterator<'_> {
-        CdfhIterator {
-            zip: self,
-            index: 0,
-        }
-    }
-}
-
-struct CdfhIterator<'a> {
-    zip: &'a mut LazyZipFile,
-    index: usize,
-}
-
-impl<'a> CdfhIterator<'a> {
-    async fn next(&mut self) -> Result<Option<Rc<Cdfh>>> {
-        match self.zip.headers.get(self.index) {
-            Some(cdfh) => Ok(Some(Rc::clone(cdfh))),
-            None => {
-                let Some(cdfh) = self.zip.cd.next().await? else {
-                    return Ok(None);
+        let cdfh = match self.headers.get(filename) {
+            Some(cdfh) => Some(Rc::clone(cdfh)),
+            None => loop {
+                let Some(cdfh) = self.cd.next().await? else {
+                    break None;
                 };
 
                 let cdfh = Rc::new(cdfh);
-                self.zip.headers.push(Rc::clone(&cdfh));
-                Ok(Some(cdfh))
-            }
+                self.headers.insert(cdfh.filename.clone(), Rc::clone(&cdfh));
+                if cdfh.filename == filename {
+                    break Some(cdfh);
+                }
+            },
+        };
+
+        match cdfh {
+            Some(cdfh) => read_file_at_cdfh(&self.client, &self.url, &cdfh).await,
+            None => Err(Error::CdFileNotFound),
         }
     }
 }
