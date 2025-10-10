@@ -1,4 +1,39 @@
+//! `ziponline` is a minimalist ZIP file extractor that uses HTTP range requests to avoid extracting the entire archive when you only need to extract a few individual files.
+//!
+//! There are two main ways to extract zip files:
+//! - `ziponline::extract_file` - extracts a singular file from the archive.
+//! - `ziponline::LazyZipFile` - uses caching to speed-up multiple file extractions from the same archive.
+//!
+//! # Examples
+//!
+//! Extract a single file
+//! ```rust
+//! let mut reader = ziponline::extract_file(
+//!     &client,    // the reqwest::Client
+//!     &url,       // the url of the zip file
+//!     None,       // the filesize or None if it is unknown
+//!     "file.txt", // the name of the file to extract
+//! ).await?;
+//!
+//! // `reader` is an io::Read object.
+//! io::copy(&mut reader, ...);
+//! ```
+//!
+//! Extract multiple files
+//! ```rust
+//! let mut zip_file = LazyZipFile::new(
+//!     client,   // the reqwest::Client
+//!     url,      // the url of the zip file
+//!     filesize, // the filesize or None if it is unknown
+//! ).await?;
+//!
+//! let abc_reader = zip_file.extract_file("abc.txt").await?;
+//! let def_reader = zip_file.extract_file("def.txt").await?;
+//! let ghi_reader = zip_file.extract_file("ghi.txt").await?;
+//! ```
+
 #![warn(clippy::cargo)]
+#![warn(missing_docs)]
 #![allow(clippy::let_unit_value)]
 use std::{collections::HashMap, io, num::ParseIntError, rc::Rc};
 
@@ -473,24 +508,35 @@ async fn request_content_length(client: &Client, url: &Url) -> Result<usize> {
     }
 }
 
+/// Shortcut for `Result<T, ziponline::Error>`
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Errors for failed HTTP requests and invalid zip file formats.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    /// A request failure.
     #[error(transparent)]
     Request(#[from] reqwest::Error),
+    /// When the filesize is not provided, ziponline will create a HEAD request to retrieve the filesize.
+    /// If the HEAD request does not contain a `content-length` header this error will be returned.
     #[error("missing content-length header")]
     ContentLengthMissing,
+    /// The `content-length` header of the request is not valid ASCII.
     #[error("content-length is not valid ascii")]
     ContentLengthInvalidAscii(ToStrError),
+    /// The `content-length` header of the request could not be parsed as a number.
     #[error("couldn't parse content-length as a number: {0}")]
     ContentLengthParse(ParseIntError),
+    /// The zip file stream ended unexpectedly.
     #[error("unexpected eof")]
     UnexpectedEof,
+    /// The end of central directory header could not be found, this may be a sign of corruption.
     #[error("eocd not found")]
     EocdNotFound,
+    /// When trying to extract a file, it could not be found.
     #[error("cd: file not found")]
     CdFileNotFound,
+    /// A file header is malformed or broken, this may be a sign of corruption.
     #[error("malformed file header")]
     MalformedFileHeader,
 }
