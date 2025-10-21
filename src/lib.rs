@@ -490,6 +490,10 @@ async fn read_eocd64<S: ParserStream>(r: &mut Parser<S>, offset: usize) -> Resul
 ///
 /// # Errors
 /// If the Content-Length is not present or malformed.
+// TODO: Currently, ziponline does not check if a url supports HTTP range requests
+//       because some servers don't properly set the Accept-Ranges header,
+//       but you COULD attempt a 0-0 byte range request and see if it fails to check instead.
+//       TL;DR check if a url supports http range requests by sending a 0-0 byte range request.
 async fn request_content_length(client: &Client, url: &Url) -> Result<usize> {
     let resp = client.head(url.clone()).send().await?.error_for_status()?;
 
